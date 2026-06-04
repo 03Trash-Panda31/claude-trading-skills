@@ -25,10 +25,9 @@ except ImportError:
     print("ERROR: requests library not found. Install with: pip install requests", file=sys.stderr)
     sys.exit(1)
 
+from _fmp_compat import v3_to_stable
 
 # --- FMP endpoint fallback: stable (new users) -> v3 (legacy users) ---
-from _fmp_compat import v3_to_stable  # v3->stable patch 2026-05-22
-
 
 
 def _stable_quote_url(base, symbols_str, params):
@@ -149,7 +148,6 @@ class FMPClient:
     def _rate_limited_get(
         self, url: str, params: Optional[dict] = None, quiet: bool = False
     ) -> Optional[dict]:
-        url, params = v3_to_stable(url, params)  # v3->stable patch 2026-05-22
         if self.rate_limit_reached:
             return None
 
@@ -282,8 +280,10 @@ class FMPClient:
         if cache_key in self.cache:
             return self.cache[cache_key]
 
-        url = f"{self.BASE_URL}/sp500_constituent"
-        data = self._rate_limited_get(url)
+        # Migrate hardcoded v3 URL to /stable (this method bypasses the
+        # _FMP_ENDPOINTS stable→v3 fallback list, so rewrite at the call site).
+        url, params = v3_to_stable(f"{self.BASE_URL}/sp500_constituent")
+        data = self._rate_limited_get(url, params)
         if data:
             self.cache[cache_key] = data
         return data

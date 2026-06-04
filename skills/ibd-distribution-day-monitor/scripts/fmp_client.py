@@ -27,10 +27,9 @@ except ImportError:
     print("ERROR: requests library not found. Install with: pip install requests", file=sys.stderr)
     sys.exit(1)
 
+from _fmp_compat import v3_to_stable
 
 # --- FMP endpoint fallback: stable (new users) -> v3 (legacy users) ---
-from _fmp_compat import v3_to_stable  # v3->stable patch 2026-05-22
-
 
 
 def _stable_hist_url(base, symbols_str, params):
@@ -148,7 +147,6 @@ class FMPClient:
         Raises:
             ApiCallBudgetExceeded: When api_calls_made >= max_api_calls
         """
-        url, params = v3_to_stable(url, params)  # v3->stable patch 2026-05-22
         if self.api_calls_made >= self.max_api_calls:
             raise ApiCallBudgetExceeded(
                 f"API call budget exhausted: {self.api_calls_made}/{self.max_api_calls} calls used"
@@ -285,15 +283,20 @@ class FMPClient:
         if cache_key in self.cache:
             return self.cache[cache_key]
 
-        url = f"{self.BASE_URL}/earning_calendar"
-        params = {"from": from_date, "to": to_date}
+        # Hardcoded v3 URL bypasses the stable→v3 fallback list; rewrite here.
+        url, params = v3_to_stable(
+            f"{self.BASE_URL}/earning_calendar", {"from": from_date, "to": to_date}
+        )
         data = self._rate_limited_get(url, params)
         if data:
             self.cache[cache_key] = data
         return data
 
     def get_company_profiles(self, symbols: list[str]) -> dict[str, dict]:
-        """Fetch company profiles for multiple symbols in batches.
+        """Fetch company profiles for multiple symbols.
+
+        The /stable profile endpoint does not support comma-batched symbols
+        (a multi-symbol request returns ``[]``), so fetch one symbol at a time.
 
         Args:
             symbols: List of stock symbols
@@ -302,22 +305,21 @@ class FMPClient:
             Dict mapping symbol -> profile dict (with marketCap, sector, etc.)
         """
         results = {}
-        batch_size = 100
-        for i in range(0, len(symbols), batch_size):
-            batch = symbols[i : i + batch_size]
-            batch_str = ",".join(batch)
-
-            cache_key = f"profile_{batch_str}"
+        for symbol in symbols:
+            cache_key = f"profile_{symbol}"
             if cache_key in self.cache:
-                for profile in self.cache[cache_key]:
-                    results[profile["symbol"]] = profile
+                cached = self.cache[cache_key]
+                if isinstance(cached, dict):
+                    results[symbol] = cached
                 continue
 
-            url = f"{self.BASE_URL}/profile/{batch_str}"
-            data = self._rate_limited_get(url)
-            if data:
-                self.cache[cache_key] = data
-                for profile in data:
+            # Hardcoded v3 URL bypasses the stable→v3 fallback list; rewrite here.
+            url, params = v3_to_stable(f"{self.BASE_URL}/profile/{symbol}")
+            data = self._rate_limited_get(url, params)
+            if data and isinstance(data, list) and data:
+                profile = data[0]
+                if isinstance(profile, dict) and "symbol" in profile:
+                    self.cache[cache_key] = profile
                     results[profile["symbol"]] = profile
         return results
 

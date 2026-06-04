@@ -365,7 +365,8 @@ def fetch_historical_prices_for_hv(symbol, api_key, days=90):
             if historical:
                 historical = historical[:days]
                 historical = historical[::-1]  # Reverse to chronological order
-                return [item.get("adjClose") or item["close"] for item in historical],  # stable shape compat
+                # stable shape compat: EOD endpoint exposes `close`, not `adjClose`
+                return [item.get("adjClose") or item["close"] for item in historical]
         except Exception:  # nosec B112 - intentional fallback to next FMP endpoint
             continue
 

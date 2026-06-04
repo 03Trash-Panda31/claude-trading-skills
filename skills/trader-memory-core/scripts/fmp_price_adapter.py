@@ -88,9 +88,9 @@ class FMPPriceAdapter:
         if isinstance(data, list):
             norm = ticker.replace("-", ".")
             return [
-                row for row in data
-                if isinstance(row, dict)
-                and row.get("symbol", ticker).replace("-", ".") == norm
+                row
+                for row in data
+                if isinstance(row, dict) and row.get("symbol", ticker).replace("-", ".") == norm
             ]
         if not isinstance(data, dict):
             return []
