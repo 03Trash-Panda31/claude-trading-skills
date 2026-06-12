@@ -121,6 +121,7 @@ class FmpClient:
         self.attempts = 0
         self.successes = 0
         self.failures: list[dict[str, Any]] = []
+        self.missing: list[dict[str, Any]] = []
 
     def get(self, path: str, **params: Any) -> Any:
         if not self.api_key:
@@ -135,8 +136,21 @@ class FmpClient:
         for source, url, req_params in attempts:
             data = self._request(source, path, url, req_params)
             if data is not None:
-                return self._normalize(path, data)
+                normalized = self._normalize(path, data)
+                if self._should_fallback_on_empty_stable(source, path, normalized):
+                    self.failures.append(
+                        {
+                            "source": source,
+                            "path": path,
+                            "reason": "empty_stable_response",
+                        }
+                    )
+                    continue
+                return normalized
         return None
+
+    def record_missing(self, source: str, symbol: str, reason: str) -> None:
+        self.missing.append({"source": source, "symbol": symbol, "reason": reason})
 
     def diagnostics(self) -> dict[str, Any]:
         if not self.api_key:
@@ -145,7 +159,7 @@ class FmpClient:
             status = "skipped"
         elif self.successes == 0:
             status = "failed"
-        elif self.failures:
+        elif self.failures or self.missing:
             status = "degraded"
         else:
             status = "ok"
@@ -155,7 +169,9 @@ class FmpClient:
             "attempts": self.attempts,
             "successes": self.successes,
             "failures": len(self.failures),
+            "missing": len(self.missing),
             "failure_samples": self.failures[:20],
+            "missing_samples": self.missing[:20],
         }
 
     @staticmethod
@@ -191,6 +207,10 @@ class FmpClient:
 
         return data
 
+    @staticmethod
+    def _should_fallback_on_empty_stable(source: str, path: str, data: Any) -> bool:
+        return source == "stable" and path.startswith(("profile/", "quote/")) and data == []
+
     def _request(self, source: str, path: str, url: str, params: dict[str, Any]) -> Any:
         self.attempts += 1
         req_params = dict(params)
@@ -222,8 +242,15 @@ class FmpClient:
         return data
 
 
-def chunks(values: list[str], size: int) -> list[list[str]]:
-    return [values[i : i + size] for i in range(0, len(values), size)]
+def find_symbol_record(data: Any, symbol: str) -> dict | None:
+    records = data if isinstance(data, list) else [data] if isinstance(data, dict) else []
+    symbol_upper = symbol.upper()
+    for record in records:
+        if isinstance(record, dict) and str(record.get("symbol", "")).upper() == symbol_upper:
+            return record
+    if len(records) == 1 and isinstance(records[0], dict) and not records[0].get("symbol"):
+        return records[0]
+    return None
 
 
 def fetch_profiles_and_quotes(symbols: list[str], fmp_client: FmpClient) -> tuple[dict, dict]:
@@ -232,17 +259,18 @@ def fetch_profiles_and_quotes(symbols: list[str], fmp_client: FmpClient) -> tupl
     if not symbols or not fmp_client.api_key:
         return profiles, quotes
 
-    for chunk in chunks(symbols, 50):
-        symbol_csv = ",".join(chunk)
-        profile_data = fmp_client.get(f"profile/{symbol_csv}")
-        if isinstance(profile_data, list):
-            profiles.update(
-                {item.get("symbol"): item for item in profile_data if item.get("symbol")}
-            )
+    for symbol in symbols:
+        profile = find_symbol_record(fmp_client.get(f"profile/{symbol}"), symbol)
+        if profile:
+            profiles[symbol] = profile
+        else:
+            fmp_client.record_missing("profile", symbol, "empty_or_unmatched_response")
 
-        quote_data = fmp_client.get(f"quote/{symbol_csv}")
-        if isinstance(quote_data, list):
-            quotes.update({item.get("symbol"): item for item in quote_data if item.get("symbol")})
+        quote = find_symbol_record(fmp_client.get(f"quote/{symbol}"), symbol)
+        if quote:
+            quotes[symbol] = quote
+        else:
+            fmp_client.record_missing("quote", symbol, "empty_or_unmatched_response")
 
     return profiles, quotes
 

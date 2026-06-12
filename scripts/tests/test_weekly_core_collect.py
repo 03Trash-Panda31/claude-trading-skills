@@ -102,3 +102,53 @@ def test_fmp_diagnostics_fail_when_all_attempts_fail(monkeypatch) -> None:
     assert diagnostics["attempts"] == 2
     assert diagnostics["successes"] == 0
     assert diagnostics["failures"] == 2
+
+
+def test_fetch_profiles_and_quotes_uses_per_symbol_stable_requests(monkeypatch) -> None:
+    calls = []
+
+    def fake_get(url, params, timeout):
+        calls.append({"url": url, "params": dict(params), "timeout": timeout})
+        symbol = params["symbol"]
+        if url == "https://financialmodelingprep.com/stable/profile":
+            return FakeResponse(200, [{"symbol": symbol, "sector": "Technology"}])
+        if url == "https://financialmodelingprep.com/stable/quote":
+            return FakeResponse(200, [{"symbol": symbol, "price": 100}])
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    monkeypatch.setattr(collector.requests, "get", fake_get)
+
+    client = collector.FmpClient(DUMMY_FMP_VALUE)
+    profiles, quotes = collector.fetch_profiles_and_quotes(["AAPL", "MSFT"], client)
+
+    assert profiles == {
+        "AAPL": {"symbol": "AAPL", "sector": "Technology"},
+        "MSFT": {"symbol": "MSFT", "sector": "Technology"},
+    }
+    assert quotes == {
+        "AAPL": {"symbol": "AAPL", "price": 100},
+        "MSFT": {"symbol": "MSFT", "price": 100},
+    }
+    assert [call["params"]["symbol"] for call in calls] == ["AAPL", "AAPL", "MSFT", "MSFT"]
+    assert all("," not in call["params"]["symbol"] for call in calls)
+    assert client.diagnostics()["status"] == "ok"
+
+
+def test_fetch_profiles_and_quotes_marks_empty_responses_degraded(monkeypatch) -> None:
+    def fake_get(url, params, timeout):
+        return FakeResponse(200, [])
+
+    monkeypatch.setattr(collector.requests, "get", fake_get)
+
+    client = collector.FmpClient(DUMMY_FMP_VALUE)
+    profiles, quotes = collector.fetch_profiles_and_quotes(["AAPL"], client)
+
+    assert profiles == {}
+    assert quotes == {}
+    diagnostics = client.diagnostics()
+    assert diagnostics["status"] == "degraded"
+    assert diagnostics["missing"] == 2
+    assert diagnostics["missing_samples"] == [
+        {"source": "profile", "symbol": "AAPL", "reason": "empty_or_unmatched_response"},
+        {"source": "quote", "symbol": "AAPL", "reason": "empty_or_unmatched_response"},
+    ]
